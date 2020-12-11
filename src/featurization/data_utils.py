@@ -182,6 +182,20 @@ def get_atom_features(atom, one_hot_formal_charge=True):
     return np.array(attributes, dtype=np.float32)
 
 
+def get_protein_features(protein):
+    """Calculate atom features.
+
+    Args:
+        protein (str): Protein residues "MKK...".
+
+    Returns:
+        (List) of protein numbers
+    """
+    
+    
+    return np.array(attributes, dtype=np.float32)
+
+
 def one_hot_vector(val, lst):
     """Converts a value to a one-hot vector based on options in lst"""
     if val not in lst:
@@ -199,6 +213,17 @@ class Molecule:
         self.node_features = x[0]
         self.adjacency_matrix = x[1]
         self.distance_matrix = x[2]
+        self.y = y
+        self.index = index
+
+
+class Protein:
+    """
+        Class that represents a train/validation/test datum
+    """
+    def __init__(self, x, index, y=None):
+        self.node_features = x[0]
+        self.distance_matrix = x[1]
         self.y = y
         self.index = index
 
@@ -223,6 +248,27 @@ class MolDataset(Dataset):
             return MolDataset(self.data_list[key])
         return self.data_list[key]
 
+    
+class ProteinDataset(Dataset):
+    """
+    Class that represents a train/validation/test dataset that's readable for PyTorch
+    Note that this class inherits torch.utils.data.Dataset
+    """
+
+    def __init__(self, data_list):
+        """
+        @param data_list: list of Protein objects
+        """
+        self.data_list = data_list
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, key):
+        if type(key) == slice:
+            return ProteinDataset(self.data_list[key])
+        return self.data_list[key]
+    
 
 def pad_array(array, shape, dtype=np.float32):
     """Pad a 2-dimensional array with zeros.
@@ -255,6 +301,37 @@ def mol_collate_func(batch):
 
     max_size = 0
     for molecule in batch:
+        if type(molecule.y[0]) == np.ndarray:
+            labels.append(molecule.y[0])
+        else:
+            labels.append(molecule.y)
+        if molecule.adjacency_matrix.shape[0] > max_size:
+            max_size = molecule.adjacency_matrix.shape[0]
+
+    for molecule in batch:
+        adjacency_list.append(pad_array(molecule.adjacency_matrix, (max_size, max_size)))
+        distance_list.append(pad_array(molecule.distance_matrix, (max_size, max_size)))
+        features_list.append(pad_array(molecule.node_features, (max_size, molecule.node_features.shape[1])))
+
+    return [FloatTensor(features) for features in (adjacency_list, features_list, distance_list, labels)]
+
+
+def protein_collate_func(batch):
+    """Create a padded batch of molecule features.
+
+    Args:
+        batch (list[Molecule]): A batch of raw molecules.
+
+    Returns:
+        A list of FloatTensors with padded molecule features:
+        adjacency matrices, node features, distance matrices, and labels.
+    """
+    distance_list, features_list = [], []
+    labels = []
+
+    max_size = 0
+    for protein in batch:
+        ## TODO from here
         if type(molecule.y[0]) == np.ndarray:
             labels.append(molecule.y[0])
         else:
@@ -303,3 +380,70 @@ def construct_loader(x, y, batch_size, shuffle=True):
                                          collate_fn=mol_collate_func,
                                          shuffle=shuffle)
     return loader
+
+
+def get_seq_dist(file_name):
+    """
+    Get sequence and distance matrix from the output file
+    from Alphafold (*.rr).
+    
+    Args:
+        file_name(str): Target file name.
+    
+    Returns:
+        tuple:(distance, residue)
+            distance(np.array): Numpy array for the distances between residues
+            residues(str): Protein sequence(residues)
+    """
+    protein_f = open(file_name, 'r')    
+    lines =  protein_f.readlines()
+    idx = 0
+    
+    for i in range(len(lines)):
+        cols = lines[i].split()
+        idx += 1
+        if cols[0] == 'MODEL':
+            break
+
+    residues = ''
+    for i in range(idx, len(lines)):
+        if len(lines[i].split()) > 2:
+            idx = i
+            break
+        residues += lines[i].rstrip()
+    distance = np.zeros((len(residues),len(residues)))
+            
+    for i in range(idx, len(lines)):
+        cols = lines[i].split()
+        if cols[0] == 'END':
+            break
+        distance[int(cols[0])-1][int(cols[1])-1] = float(cols[4])
+    
+    return distance + distance.T, residues
+
+
+def load_alphafold_data(dir_name):
+    """
+    Load distance matrices and protein sequences from given directory.
+    
+    Args:
+        dir_name(str): Target directory name including *.rr files.
+    
+    Returns:
+        tuple(dists, reses)
+            dists[(np.array)]: list of distance matrices
+            reses[(str)]: list of protein residues
+    """
+    import glob
+    dists = []
+    reses = []
+    
+    #files = glob.glob(dir_name+"/*.rr")
+    files = glob.glob(dir_name+"/*")
+    
+    for file in files:
+        dist, res = get_seq_dist(file)
+        dists.append(dist)
+        reses.append(res)
+        
+    return dists, reses
